@@ -1,0 +1,311 @@
+---
+title: "Seminar 7"
+format: html
+editor: visual
+---
+
+```{r}
+# Packages needed for today (only run if you need to install the package):
+install.packages("tidyverse")
+install.packages("readxl")
+install.packages("sf")
+install.packages("terra")
+install.packages("mapview")
+install.packages("bcdata")
+install.packages("bcmaps")
+```
+
+## The sf package in more detail
+
+The sf package provides an interface to manipulate vector based spatial data (points, lines, polygons). In its simplest form, you can think of an sf dataframe as a regular dataframe with an attached geometry column. sf dataframes can be loaded in a couple of ways:
+
+-   Loaded from a previously created spatial data file (.shp, .gpkg, .kml, etc.)
+
+-   Created from lat/long columns in a dataframe
+
+We have gone through the process of loading spatial data from a file, but we have not gone through the data conversion process yet. Sometimes, we receive data in an Excel file or a .csv file. To demonstrate how to create sf dataframes from this data type, I have provided an Excel file from a project I participated in from a few years ago where we went to various locations near Sechelt, BC and collected information on plants of interest. The Excel file has two tabs: one tab is labelled "sechelt_site", and the other is labelled "sechelt_plants". Similar to reading in a geopackage with multiple layers embedded, R requires that you specify which tab (or sheet) from the Excel file is loaded. We will accomplish this using the "readxl" package.
+
+```{r}
+library(readxl)
+library(sf)
+library(tidyverse)
+library(mapview)
+
+# Read in the list of tabs (sheets) from the Excel file
+tabs <- excel_sheets("Sechelt_FieldSampling_Aug2020.xlsx")
+
+# Read the "sechelt_site" tab (the first value in tab_ids) in from the Excel file
+site_df <- read_excel("Sechelt_FieldSampling_Aug2020.xlsx", sheet = tabs[1])
+```
+
+The above chunk loaded in the spreadsheet containing various columns describing the sampling locations involved during the 2020 year of this project. If you view the column names, you'll find the "Lat" and "Long" columns which will be needed for changing this to an sf dataframe. To accomplish this, we will use the `st_as_sf()` function and specify the Lat and Long columns in the `coordinates` argument. This will retain the data in the dataframe, add a geometry column to the end of the dataframe, and remove the "Lat" and "Long" columns since they should no longer be required for any subsequent analyses. We also need to specify the CRS of the coordinates that we are reading in. This data is usually provided to you by the surveyor that collected the data, or you would have a record of it if you collected the data yourself. In this case, the EPSG code is 4326 and we provide that in the `crs` argument.
+
+```{r}
+# This will load the spatial data without a CRS
+site_sf <- st_as_sf(site_df, coords = c("Long", "Lat"))
+
+# This will load the spatial data including a CRS
+site_sf <- st_as_sf(site_df, coords = c("Long", "Lat"), crs = 4326)
+site_sf
+```
+
+The above chunk outlines the typical process for converting data to an sf dataframe; however, the sf package has a few more quirks. Let's dial this back and look at what it takes to create that geometry column and focus only on the spatial coordinates.
+
+First, for the sake of demonstration, let's isolate a single row from the original dataframe and only keep the Lat/Long columns. Next, we can create a simple "POINT" object with the `st_point()` function using that filtered dataset:
+
+```{r}
+# Filter the first row (slice), and select the Lat/Long columns
+p1_df <- site_df |> 
+  slice(1) |> 
+  select(Lat, Long)
+
+# Create the POINT object
+p1 <- st_point(c(x = p1_df$Long, y = p1_df$Lat))
+
+# Show the class of this object
+class(p1)
+```
+
+Notice that the p1 object is an "sfg" object type. sfg is an acronym for "simple feature geometry", and it is an object that carries the geometry for a ***single feature***, which in this case is the first row of our data. These sfg objects are the initial building blocks for the geometry columns. Multiple sfg objects together create a "simple feature collection" or "sfc" object. The two main differences between sfg and sfc object types is that sfc objects can contain multiple features while sfg objects can only contain a single feature, and an sfc object contains the CRS information while sfg objects do not. This can be deomstrated by creating a second sfg point, combining it with the first one, and converting it to an sfc object:
+
+```{r}
+# Filter the second row (slice), and select the Lat/Long columns
+p2_df <- site_df |> 
+  slice(2) |> 
+  select(Lat, Long)
+
+# Create the sfg POINT object
+p2 <- st_point(c(x = p2_df$Long, y = p2_df$Lat))
+
+# Create the sfc object
+pts <- st_as_sfc(list(p1, p2), crs = 4326)
+pts
+```
+
+In the data that is printed here, it shows that there are 2 features (the two sfg point objects we created), and that there is a CRS applied to that object. Lastly, in order to mirror the final sf dataframe, data needs to be added. We will get the first and second rows of data (to match the first and second rows of coordinates we collected), and then we will add the geometry from the "pts" object created above:
+
+```{r}
+# Filter site_df dataframe to get first and last rows (many ways to do this)
+site_df_filter <- site_df |> 
+  slice(1, 2) |> 
+  select(-c(Lat, Long))
+
+# Use the st_sf function (NOT st_as_sf) to combine a dataframe and an sfc object.
+# The differences: st_as_sf will convert a dataframe to an sf dataframe using 
+# specified columns in the original dataframe, while st_sf will take a dataframe
+# without geometries and place geometries onto it from an sfc object.
+site_sf_filter <- st_sf(site_df_filter, pts)
+site_sf_filter
+```
+
+The above three chunks are meant to demonstrate some of the intricacies involved with the sf package. Most of the time, we don't need to worry about sfg objects; however, sfc objects are constantly being used as these contain the geometries embedded within sf dataframes. We will also perform geometric operations (e.g.: buffering, intersecting, etc.) on either sf or sfc objects, but this is not possible with sfg objects since they lack a CRS.
+
+To demonstrate sfc usage, we can create a ***bounding box*** of the data (i.e.: the minimum geometry required to contain all of the points in your feature set). This is accomplished by the `st_bbox()` function, e.g.:
+
+```{r}
+# Create a bounding box geometry
+site_bbox <- st_bbox(site_sf)
+site_bbox
+```
+
+Notice that this just generates the values for that bounding box; however, I would rather this be in a spatial format. Luckily, the sf package allows the `st_bbox()` function to be placed inside of the `st_as_sfc()` function to do just that, without needing to provide any further arguments:
+
+```{r}
+site_bbox_sfc <- st_as_sfc(st_bbox(site_sf))
+site_bbox_sfc
+mapview(site_bbox_sfc)
+```
+
+Here is another problem: sometimes (not every time) the mapview package does not show sfc objects; it will pan the map to the area that the sfc object lies, but it won't show it. In order to view the sfc object, it may need to first be converted to an sf object (this is annoying, but currently the only workaround if that issue persists):
+
+```{r}
+site_bbox_sf <- st_as_sf(site_bbox_sfc)
+mapview(site_bbox_sf) + site_sf
+```
+
+We have now covered how to do some data type conversions within the sf package. Again, we typically don't work with sfg object types but they are important as they serve as the building blocks for the sfc objects, and sfc objects are essentially the geometry of the sf dataframe. The st_bbox function is useful for getting the minimum bounding geometry of the entire dataset, and these shapes can help when it comes to acquiring some data.
+
+## bcdata and bcmaps packages
+
+The bcdata package is an R package that will allow you to access data hosted on the BC Data Catalogue with a few lines of code and download tons of data. You were introduced to this yesterday, but we will go a step further and do our searching within this package as well. In this manner, you don't even really need to open a web browser to determine which dataset you are looking for - how nice!
+
+Let's begin by first using the `bcdc_search()` function to search for the greenspaces data. We know that there is only a single dataset for greenspaces from yesterday, so this should be relatively simple:
+
+```{r}
+library(bcdata)
+gs_search <- bcdc_search("greenspace")
+View(gs_search)
+```
+
+The search returned a single result, as expected. If we peer through the returned list object, we notice that the "id" field contains the unique ID required for downloading this dataset. This ID is what we will use within the `bcdc_query_geodata()` function to download data. This function has one more argument, `crs`. This is the CRS that you wish to have the data returned in. It is set as 3005 (BC Albers) by default, though you can change it if needed. For now, we will keep it set to 3005.
+
+```{r}
+bcdc_query_geodata(gs_search[[1]]$id, crs = 3005)
+```
+
+The above function tells us that the entire dataset has over 9000 features. This is the result from the entire province; however, we only want to retrieve greenspaces from within our area of interest (AOI). There are a few ways we can go about this, but I will show the most concise way. First, transform the sf dataframe to the BC Albers projection, and then use that transformed object to perform the query:
+
+```{r}
+site_sf_albers <- st_transform(site_sf, 3005)
+bcdc_query_geodata(gs_search[[1]]$id, crs = 3005) %>% 
+  filter(BBOX(site_sf_albers))
+```
+
+This shows that there are 45 rows of data from this query, however only 6 of these rows have been downloaded. In order to fully download the dataset, we must use the `collect()` function at the end of this entire function and specify an object name:
+
+```{r}
+greenspaces <- bcdc_query_geodata(gs_search[[1]]$id, crs = 3005) %>% 
+  filter(BBOX(site_sf_albers)) %>% 
+  collect()
+
+mapview(greenspaces)
+```
+
+We have successfully downloaded all greenspace layers within our AOI! Now, the AOI is admittedly a little janky and I would rather the AOI be representative of the entire island. We could draw out our own polygon by hand, or use existing datasets to determine our AOI. Fortunately, you are in the hands of me, your instructor, who has gone through these steps before. In the past, previous projects called "TEM" (terrestrial ecosystem mapping) were carried out in various areas of the province in order to roughly characterize the site series (ecosystem types) in small polygons. A given project may have hundreds of these polygons, though it is not those polygons we are interested in obtaining; rather, it is the project boundaries. This layer exists in the BC Data catalogue and we can use it to obtain a better AOI moving forward:
+
+```{r}
+
+# Use the BC Data Catalogue to get the Sechelt LU TEM project boundary:
+tem <- bcdc_search("tem project boundaries", res_format = "wms")
+tem_id <- grep("-tem-project-boundaries", tem)
+site_aoi <- bcdc_query_geodata(tem[[tem_id]]$id, crs = 3005) %>% 
+  filter(PROJECT_NAME == "Sechelt LU TEM") %>% 
+  collect()
+
+# Repeat the collection of greenspaces with our new AOI:
+greenspaces_aoi <- bcdc_query_geodata(gs_search[[1]]$id, crs = 3005) %>% 
+  filter(INTERSECTS(site_aoi)) %>% 
+  collect()
+
+mapview(site_aoi, col.regions = "red") + mapview(greenspaces_aoi)
+```
+
+Zoom into the south-eastern portion near the town of Sechelt. Notice that there is a shape sticking out beyond the AOI. This is by design: what the INTERSECTS function does (as well as the BBOX function) is that it will collect the entire geometry of a feature if any part of it intersects with the AOI. In order to remove the extra pieces that hang outside of the AOI, an additional clipping must be performed:
+
+```{r}
+
+# The st_intersection function will join all columns from two datasets, so instead
+# of dealing with a mess of columns, I will only focus on the geometry of the 
+# AOI object and clip the greenspace features (keeping all of their attributes) to
+# the AOI geometry.
+
+# Create the AOI geometry (convert the sf object to an sfc object)
+site_aoi_sfc <- st_geometry(site_aoi)
+
+# Perform the intersection (clip)
+greenspaces_clip <- st_intersection(greenspaces_aoi, site_aoi_sfc)
+
+# Observe results
+nrow(greenspaces_clip) == nrow(greenspaces_aoi)
+mapview(site_aoi, col.regions = "red") + mapview(greenspaces_clip)
+
+```
+
+Excellent! Let's repeat this process, except this time we will retrieve roads. The process is similar whether you are downloading point, line, or polygon data types. In the next chunk, I will show you the minimum required code needed to download spatial layers within a given AOI:
+
+```{r}
+
+road_search <- bcdc_search("roads", res_format = "wms")
+
+# Identify which of the resulting names has "digital-road-atlas" in it. 
+# The "grep" function returns the index of a vector matching a pattern you specify
+road_id <- grep("digital-road-atlas", names(road_search))
+
+# Download roads within the BBOX of points:
+roads <- bcdc_query_geodata(road_search[[road_id]]$id, crs = 3005) |> 
+  filter(INTERSECTS(site_aoi)) |> 
+  collect() |> 
+  st_intersection(site_aoi_sfc)
+
+mapview(roads, zcol = "ROAD_SURFACE")
+```
+
+The overall process for downloading spatial data from the BC Data Catalogue will always involve:
+
+1.  Specifying the dataset that you want to download
+2.  Setting up a filter to only get the data that you need
+3.  Collecting that data
+4.  Clip off any extra pieces (if applicable)
+
+There are other repositories of open data out there, however not all of them have as good of an interface for downloading data from it, especially within the context of R. The BC Government has gone a step further: for layers that are commonly downloaded, there is a separate package that can avoid you having to go through the query, filter, and collect stages. This package is the bcmaps package, and includes layers like the shape of the province, city locations, the various regional districts, and so on. Let's explore this package now:
+
+First, we will look at all layers that are available in this package, and then explore a couple of them using their functions:
+
+```{r}
+library(bcmaps)
+
+# Explore all available layers
+View(available_layers())
+
+# Get the municipalities layer (i.e.: city limit polygons)
+all_cities <- municipalities()
+
+# Notice in the console area that there is a prompt for your permission to 
+# store the physical layer in a cached directory on your PC. In order to proceed,
+# type 1 into the console and press "Enter" to continue.
+mapview(all_cities)
+
+# We can prevent a prompt from showing up by specifying "ask = FALSE" and
+# "force = TRUE" in the arguments instead:
+all_regions <- regional_districts(ask = FALSE, force = TRUE)
+mapview(all_regions)
+
+```
+
+The above functions in the bcmaps package will download that data for the entire province, so while the coding might be shorter and to the point, some of the functions might take longer compared to coding them using the bcdata package. In the assignment, the `bec()` function might prove useful.
+
+## Important side-quest: Projecting raster data
+
+Some functions, like `cded_terra()`, are worth viewing their help page for. This function will download DEM ***raster*** data instead of vector data, so it's important to specify an AOI to download that data, rather than trying to download an entire province worth of data. For example, let's download the DEM that falls within our AOI we created earlier (NOTE: I use plot commands throughout instead of the mapview functions because plotting is much faster to complete by comparison):
+
+```{r}
+library(terra)
+# cded_terra from the bcmaps package
+site_dem <- cded_terra(site_aoi)
+site_dem
+plot(site_dem)
+
+```
+
+Notice that the site_dem object was downloaded into the lat/long projection system instead of BC Albers. This presents a bit of a problem: we will need to reproject the raster image back to BC Albers; however, we don't have a reference layer for how this layer should be reprojected (i.e.: we don't know what the output resolution should be). There are a number of ways that we can determine what this resolution should be: 1) the data provider will tell you; 2) perform a reprojection on the raster data itself and then round up to a number that makes sense (e.g.: if the reprojected resolution is 22.46m, round that up to 25m); 3) convert the resolution given here in degrees to what that might be in meters, though this takes some time to look up how to do. In this case, I will show you how to do number 2.
+
+```{r}
+
+# Perform initial projection to BC Albers
+site_dem_albers <- project(site_dem, "epsg:3005")
+res(site_dem_albers)
+
+# Decrease resolution to 20m by resampling. Must create a 20m grid to resample to
+resamp_grid <- rast(ext(site_dem_albers), res = 20, crs = "epsg:3005")
+site_dem_albers <- resample(site_dem_albers, resamp_grid)
+plot(site_dem_albers)
+```
+
+I just threw a bunch of functions at you; let me break them down:
+
+-   project: This performs the projection of raster data from it's source CRS within the raster object, to a new CRS. This CRS may be provided with an EPSG code, or you can use another SpatRaster object
+
+-   ext: Provides the "extent", or bounding box, of a SpatRaster object. These objects contain no data regarding resolution or CRS, they are quite simply the min and max X/Y values of the dataset
+
+-   rast: Creates a SpatRaster object, in this case from an extent. We are specifying the resolution with the `res` argument, and the CRS with the `crs` argument. This was needed so that we could perform resampling in the next step.
+
+-   resample: Changes the extent and resolution of the first SpatRaster object to match the extent and resolution of the second SpatRaster object.
+
+Now that we have successfully reprojected our raster, there is still one more thing that we want to do with it before it's used in any analyses: we would like to mask it to the shape of our AOI. This can be done with the `mask()` function:
+
+```{r}
+
+site_dem_mask <- mask(site_dem_albers, vect(site_aoi))
+
+# Write this TIF file to disk; it will save in the same folder as this script
+writeRaster(site_dem_mask, "Sechelt_DEM.tif", overwrite = TRUE)
+
+# Plot the DEM and color the NA areas in grey to show that the masking worked:
+plot(site_dem_mask, colNA = "grey")
+```
+
+The above layer is now ready for terrain analyses!
+
+## Finishing off - upload this file to GitHub
+
+We have covered many new functions today, however we want to ensure that our data is not lost by uploading this file to GitHub. Following directions from the previous seminar we will first save this file to our PC, then create a GitHub repository on the GitHub website, copy the link for the repository, and then create a new RStudio version controlled project using the link we copied. This will download the repository. Copy and paste this file into the directory where the local repository is. Commit and push the changes to finalize.
